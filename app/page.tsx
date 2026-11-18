@@ -442,16 +442,41 @@ export default function Home() {
     notify("Sessão encerrada.", "info");
   };
 
+  const getCloudAccessToken = async (): Promise<string | null> => {
+    const db = supabaseRef.current;
+    if (!db) return null;
+
+    try {
+      const { data: currentSession, error: sessionError } = await db.auth.getSession();
+      if (sessionError) console.error("Não foi possível recuperar a sessão do Supabase:", sessionError.message);
+
+      const session = currentSession.session;
+      const expiresSoon = !session?.expires_at || session.expires_at * 1000 <= Date.now() + 30_000;
+      if (session?.access_token && !expiresSoon) return session.access_token;
+
+      const { data: refreshedSession, error: refreshError } = await db.auth.refreshSession();
+      if (refreshError) console.error("Não foi possível renovar a sessão do Supabase:", refreshError.message);
+      return refreshedSession.session?.access_token ?? null;
+    } catch (error) {
+      console.error("Falha inesperada ao recuperar a sessão do Supabase:", error);
+      return null;
+    }
+  };
+
   const loadAccounts = async () => {
     if (!user || user.role !== "ADM") return;
     if (LOCAL_MODE) {
       setAccountsOpen(true);
       return;
     }
-    const session = await supabaseRef.current?.auth.getSession();
-    const token = session?.data.session?.access_token;
-    if (!token) return notify("Sessão inválida. Entre novamente.", "error");
-    const response = await fetch("/api/accounts", { headers: { Authorization: `Bearer ${token}` } });
+    const token = await getCloudAccessToken();
+    if (!token) {
+      await supabaseRef.current?.auth.signOut();
+      setUser(null);
+      setAccountsOpen(false);
+      return notify("Sua sessão expirou. Entre novamente no sistema.", "error");
+    }
+    const response = await fetch("/api/accounts", { headers: { Authorization: `Bearer ${token}` }, cache: "no-store" });
     const result = await response.json();
     if (!response.ok) return notify(result.error ?? "Não foi possível carregar as contas.", "error");
     setAccounts(result.accounts as AppAccount[]);
@@ -475,12 +500,20 @@ export default function Home() {
       setAccountBusy(false);
       return;
     }
-    const session = await supabaseRef.current?.auth.getSession();
-    const token = session?.data.session?.access_token;
+    const token = await getCloudAccessToken();
+    if (!token) {
+      await supabaseRef.current?.auth.signOut();
+      setUser(null);
+      setAccountsOpen(false);
+      notify("Sua sessão expirou. Entre novamente no sistema.", "error");
+      setAccountBusy(false);
+      return;
+    }
     const response = await fetch("/api/accounts", {
       method: "POST",
-      headers: { "Content-Type": "application/json", Authorization: `Bearer ${token ?? ""}` },
-      body: JSON.stringify(account)
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+      body: JSON.stringify(account),
+      cache: "no-store"
     });
     const result = await response.json();
     if (!response.ok) notify(result.error ?? "Não foi possível criar a conta.", "error");
@@ -503,9 +536,16 @@ export default function Home() {
       setAccountBusy(false);
       return;
     }
-    const session = await supabaseRef.current?.auth.getSession();
-    const token = session?.data.session?.access_token;
-    const response = await fetch(`/api/accounts?id=${encodeURIComponent(account.id)}`, { method: "DELETE", headers: { Authorization: `Bearer ${token ?? ""}` } });
+    const token = await getCloudAccessToken();
+    if (!token) {
+      await supabaseRef.current?.auth.signOut();
+      setUser(null);
+      setAccountsOpen(false);
+      notify("Sua sessão expirou. Entre novamente no sistema.", "error");
+      setAccountBusy(false);
+      return;
+    }
+    const response = await fetch(`/api/accounts?id=${encodeURIComponent(account.id)}`, { method: "DELETE", headers: { Authorization: `Bearer ${token}` }, cache: "no-store" });
     const result = await response.json();
     if (!response.ok) notify(result.error ?? "Não foi possível remover a conta.", "error");
     else {
